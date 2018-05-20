@@ -14,200 +14,209 @@ import java.util.concurrent.Executors;
 
 public class mr1 {
 
-    public static void main(String[] args) {
-        long startTime = System.nanoTime();
-        List<File> fList = new LinkedList<File>();
-        Map<String, String> input = new HashMap<String, String>();
+	public static void main(String[] args) {
+		long startTime = System.nanoTime();
+		List<File> fileList = new LinkedList<File>();
+		Map<String, String> input = new HashMap<String, String>();
 
-        //turns input into single file
-        int fileNum = 10;
-        for(int i=0;i<fileNum;i++) {
-            String name = "files/BigTextFile_" + (i+1) + ".txt";
-            File f = new File(name);
-            fList.add(f);
-        }
-        
+		// Create files corresponding to input strings
+		if (args.length > 0) {
+			for (int i = 1; i < args.length; i++) {
+				File file = new File(args[i]);
+				fileList.add(file);
+			}
+		}
 
-        String combinedContent = ""; //total content of all files
+		// Variable holds all inputed file contents combined
+		String totalContent = "";
+		//
+		for (File file : fileList) {
+			String content = "";
+			String newLine = System.getProperty("line.separator");
+			Scanner read = null;
+			try {
+				read = new Scanner(file);
+			} catch (FileNotFoundException e) {
+				e.printStackTrace();
+			}
+			read.useDelimiter(newLine);
+			while (read.hasNext()) {
+				content += read.next();
+			}
+			read.close();
 
-        for (File file : fList) {
-            String content = "";
-            String newLine = System.getProperty("line.separator");
-            Scanner read = null;
-            try {
-                read = new Scanner(file);
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
-            read.useDelimiter(newLine);
-            while (read.hasNext()) {
-                content += read.next();
-            }
-            read.close();
+			totalContent += content;
+		}
+		// Remove any unwanted characters
+		totalContent = totalContent.replaceAll("[\\.$|,|;|.|!]", "");
 
-            combinedContent += content;
-        }
-        
-        combinedContent = combinedContent.replaceAll("[\\.$|,|;|.|!]", "");
+		input.put("CombinedFiles.txt", totalContent);
 
-        input.put("BigJoinedTextFile.txt", combinedContent);
+		// APPROACH #3: Distributed MapReduce
+		{
 
-        //Distributed MapReduce
-        {
-            //number is thread count (ex.10) thread pool
-            final Map<String, Map<String, Integer>> output = new HashMap<String, Map<String, Integer>>();
-            int numThreads = fileNum;
-            numThreads = 50;
-            ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+			final Map<String, Map<String, Integer>> output = new HashMap<String, Map<String, Integer>>();
+			// first argument is the desired number of threads
+			String number = args[0];
+			int numThreads = Integer.parseInt(number);
+			// Creates a thread pool using 10 threads
+			ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
-            //map stage
+			// MAP:
 
-            final List<MappedItem> mappedItems = new LinkedList<MappedItem>();
+			final List<MappedItem> mappedItems = new LinkedList<MappedItem>();
 
-            final MapCallback<String, MappedItem> mapCallback = new MapCallback<String, MappedItem>() {
-                @Override
-                public synchronized void mapDone(String file, List<MappedItem> results) {
-                    mappedItems.addAll(results);
-                }
-            };
+			final MapCallback<String, MappedItem> mapCallback = new MapCallback<String, MappedItem>() {
+				@Override
+				public synchronized void mapDone(String file, List<MappedItem> results) {
+					mappedItems.addAll(results);
+				}
+			};
 
-            List<Thread> mapCluster = new ArrayList<Thread>(input.size());
+			List<Thread> mapCluster = new ArrayList<Thread>(input.size());
 
-            Iterator<Map.Entry<String, String>> inputIter = input.entrySet().iterator();
-            while (inputIter.hasNext()) {
-                Map.Entry<String, String> entry = inputIter.next();
-                final String file = entry.getKey();
-                final String contents = entry.getValue();
-                executor.execute(() -> map(file, contents, mapCallback));
-            }
+			// long startTime = System.nanoTime();
 
-            executor.shutdown();
+			Iterator<Map.Entry<String, String>> inputIter = input.entrySet().iterator();
+			while (inputIter.hasNext()) {
+				Map.Entry<String, String> entry = inputIter.next();
+				final String file = entry.getKey();
+				final String contents = entry.getValue();
+				// Executes runnable map asynchronously in thread pool
+				executor.execute(() -> map(file, contents, mapCallback));
+			}
 
-            while (!executor.isTerminated())
-                ;
+			// wait for mapping phase to be over:
+			executor.shutdown();
 
-            //group them
-            Map<String, List<String>> groupedItems = new HashMap<String, List<String>>();
+			while (!executor.isTerminated())
+				;
 
-            Iterator<MappedItem> mappedIter = mappedItems.iterator();
-            while (mappedIter.hasNext()) {
-                MappedItem item = mappedIter.next();
-                String word = item.getWord();
-                String file = item.getFile();
-                List<String> list = groupedItems.get(word);
-                if (list == null) {
-                    list = new LinkedList<String>();
-                    groupedItems.put(word, list);
-                }
-                list.add(file);
-            }
+			// GROUP:
 
-            //reduce stage
-            final ReduceCallback<String, String, Integer> reduceCallback = new ReduceCallback<String, String, Integer>() {
-                @Override
-                public synchronized void reduceDone(String k, Map<String, Integer> v) {
-                    output.put(k, v);
-                }
-            };
+			Map<String, List<String>> groupedItems = new HashMap<String, List<String>>();
 
-            executor = Executors.newFixedThreadPool(numThreads);    
+			Iterator<MappedItem> mappedIter = mappedItems.iterator();
+			while (mappedIter.hasNext()) {
+				MappedItem item = mappedIter.next();
+				String word = item.getWord();
+				String file = item.getFile();
+				List<String> list = groupedItems.get(word);
+				if (list == null) {
+					list = new LinkedList<String>();
+					groupedItems.put(word, list);
+				}
+				list.add(file);
+			}
 
-            Iterator<Map.Entry<String, List<String>>> groupedIter = groupedItems.entrySet().iterator();
-            while (groupedIter.hasNext()) {
-                Map.Entry<String, List<String>> entry = groupedIter.next();
-                final String word = entry.getKey();
-                final List<String> list = entry.getValue();
+			// REDUCE:
 
-                executor.execute(() -> reduce(word, list, reduceCallback));
-            }
+			final ReduceCallback<String, String, Integer> reduceCallback = new ReduceCallback<String, String, Integer>() {
+				@Override
+				public synchronized void reduceDone(String k, Map<String, Integer> v) {
+					output.put(k, v);
+				}
+			};
 
-            executor.shutdown();
-            while (!executor.isTerminated())
-                ;
+			executor = Executors.newFixedThreadPool(numThreads);
 
-            long endTime = System.nanoTime();
-            long duration = (endTime - startTime);
+			Iterator<Map.Entry<String, List<String>>> groupedIter = groupedItems.entrySet().iterator();
+			while (groupedIter.hasNext()) {
+				Map.Entry<String, List<String>> entry = groupedIter.next();
+				final String word = entry.getKey();
+				final List<String> list = entry.getValue();
 
-            System.out.println(output);
+				executor.execute(() -> reduce(word, list, reduceCallback));
+			}
 
-            System.out.println("\n" + (double) duration / 1000000000.0);
-        }
-    }
+			// wait for mapping phase to be over:
+			executor.shutdown();
+			while (!executor.isTerminated())
+				;
 
-    public static void map(String file, String contents, List<MappedItem> mappedItems) {
-        String[] words = contents.trim().split("\\s+");
-        for (String word : words) {
-            mappedItems.add(new MappedItem(word, file));
-        }
-    }
+			long endTime = System.nanoTime();
+			long duration = (endTime - startTime);
 
-    public static void reduce(String word, List<String> list, Map<String, Map<String, Integer>> output) {
-        Map<String, Integer> reducedList = new HashMap<String, Integer>();
-        for (String file : list) {
-            Integer occurrences = reducedList.get(file);
-            if (occurrences == null) {
-                reducedList.put(file, 1);
-            } else {
-                reducedList.put(file, occurrences.intValue() + 1);
-            }
-        }
-        output.put(word, reducedList);
-    }
+			System.out.println(output);
 
-    public static interface MapCallback<E, V> {
+			System.out.println("\n" + (double) duration / 1000000000.0);
+		}
+	}
 
-        public void mapDone(E key, List<V> values);
-    }
+	public static void map(String file, String contents, List<MappedItem> mappedItems) {
+		String[] words = contents.trim().split("\\s+");
+		for (String word : words) {
+			mappedItems.add(new MappedItem(word, file));
+		}
+	}
 
-    public static void map(String file, String contents, MapCallback<String, MappedItem> callback) {
-        String[] words = contents.trim().split("\\s+");
-        List<MappedItem> results = new ArrayList<MappedItem>(words.length);
-        for (String word : words) {
-            results.add(new MappedItem(word, file));
-        }
-        callback.mapDone(file, results);
-    }
+	public static void reduce(String word, List<String> list, Map<String, Map<String, Integer>> output) {
+		Map<String, Integer> reducedList = new HashMap<String, Integer>();
+		for (String file : list) {
+			Integer occurrences = reducedList.get(file);
+			if (occurrences == null) {
+				reducedList.put(file, 1);
+			} else {
+				reducedList.put(file, occurrences.intValue() + 1);
+			}
+		}
+		output.put(word, reducedList);
+	}
 
-    public static interface ReduceCallback<E, K, V> {
+	public static interface MapCallback<E, V> {
 
-        public void reduceDone(E e, Map<K, V> results);
-    }
+		public void mapDone(E key, List<V> values);
+	}
 
-    public static void reduce(String word, List<String> list, ReduceCallback<String, String, Integer> callback) {
+	public static void map(String file, String contents, MapCallback<String, MappedItem> callback) {
+		String[] words = contents.trim().split("\\s+");
+		List<MappedItem> results = new ArrayList<MappedItem>(words.length);
+		for (String word : words) {
+			results.add(new MappedItem(word, file));
+		}
+		callback.mapDone(file, results);
+	}
 
-        Map<String, Integer> reducedList = new HashMap<String, Integer>();
-        for (String file : list) {
-            Integer occurrences = reducedList.get(file);
-            if (occurrences == null) {
-                reducedList.put(file, 1);
-            } else {
-                reducedList.put(file, occurrences.intValue() + 1);
-            }
-        }
-        callback.reduceDone(word, reducedList);
-    }
+	public static interface ReduceCallback<E, K, V> {
 
-    private static class MappedItem {
+		public void reduceDone(E e, Map<K, V> results);
+	}
 
-        private final String word;
-        private final String file;
+	public static void reduce(String word, List<String> list, ReduceCallback<String, String, Integer> callback) {
 
-        public MappedItem(String word, String file) {
-            this.word = word;
-            this.file = file;
-        }
+		Map<String, Integer> reducedList = new HashMap<String, Integer>();
+		for (String file : list) {
+			Integer occurrences = reducedList.get(file);
+			if (occurrences == null) {
+				reducedList.put(file, 1);
+			} else {
+				reducedList.put(file, occurrences.intValue() + 1);
+			}
+		}
+		callback.reduceDone(word, reducedList);
+	}
 
-        public String getWord() {
-            return word;
-        }
+	private static class MappedItem {
 
-        public String getFile() {
-            return file;
-        }
+		private final String word;
+		private final String file;
 
-        @Override
-        public String toString() {
-            return "[\"" + word + "\",\"" + file + "\"]";
-        }
-    }
+		public MappedItem(String word, String file) {
+			this.word = word;
+			this.file = file;
+		}
+
+		public String getWord() {
+			return word;
+		}
+
+		public String getFile() {
+			return file;
+		}
+
+		@Override
+		public String toString() {
+			return "[\"" + word + "\",\"" + file + "\"]";
+		}
+	}
 }
